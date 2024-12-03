@@ -1,74 +1,102 @@
 ﻿using System.Collections.Generic;
 using UnityEngine;
+using Unity.MLAgents;
+using Unity.MLAgents.Actuators;
+using Unity.MLAgents.Sensors;
 
 [RequireComponent(typeof(BoxCollider2D))]
-public class Snake : MonoBehaviour
+public class SnakeAgent : Agent
 {
     public Transform segmentPrefab;
+    public Transform food;  // Referencia al objeto de comida.
     public Vector2Int direction = Vector2Int.right;
     public float speed = 20f;
-    public float speedMultiplier = 1f;
     public int initialSize = 4;
-    public bool moveThroughWalls = false;
 
     private readonly List<Transform> segments = new List<Transform>();
     private Vector2Int input;
-    private float nextUpdate;
+    private Vector3 previousFoodDistance;
 
-    private void Start()
+    public override void OnEpisodeBegin()
     {
         ResetState();
+        MoveFood(); // Reubicar comida.
     }
 
-    private void Update()
+    public override void CollectObservations(VectorSensor sensor)
     {
-        // Only allow turning up or down while moving in the x-axis
-        if (direction.x != 0f)
-        {
-            if (Input.GetKeyDown(KeyCode.W) || Input.GetKeyDown(KeyCode.UpArrow)) {
-                input = Vector2Int.up;
-            } else if (Input.GetKeyDown(KeyCode.S) || Input.GetKeyDown(KeyCode.DownArrow)) {
-                input = Vector2Int.down;
-            }
-        }
-        // Only allow turning left or right while moving in the y-axis
-        else if (direction.y != 0f)
-        {
-            if (Input.GetKeyDown(KeyCode.D) || Input.GetKeyDown(KeyCode.RightArrow)) {
-                input = Vector2Int.right;
-            } else if (Input.GetKeyDown(KeyCode.A) || Input.GetKeyDown(KeyCode.LeftArrow)) {
-                input = Vector2Int.left;
-            }
-        }
+        // Posición de la cabeza y de la comida.
+        sensor.AddObservation(transform.position);
+        sensor.AddObservation(food.position);
+        sensor.AddObservation(direction);
     }
 
-    private void FixedUpdate()
+    public override void OnActionReceived(ActionBuffers actions)
     {
-        // Wait until the next update before proceeding
-        if (Time.time < nextUpdate) {
-            return;
+        int action = actions.DiscreteActions[0];
+
+        switch (action)
+        {
+            case 0: input = Vector2Int.up; break;
+            case 1: input = Vector2Int.down; break;
+            case 2: input = Vector2Int.left; break;
+            case 3: input = Vector2Int.right; break;
         }
 
-        // Set the new direction based on the input
-        if (input != Vector2Int.zero) {
-            direction = input;
+        MoveSnake();
+
+        // Recompensas y penalizaciones según la distancia a la comida.
+        Vector3 currentFoodDistance = food.position - transform.position;
+
+        if (currentFoodDistance.magnitude < previousFoodDistance.magnitude)
+        {
+            AddReward(0.1f); // Premio por acercarse.
+        }
+        else
+        {
+            AddReward(-0.1f); // Penalización por alejarse.
         }
 
-        // Set each segment's position to be the same as the one it follows. We
-        // must do this in reverse order so the position is set to the previous
-        // position, otherwise they will all be stacked on top of each other.
-        for (int i = segments.Count - 1; i > 0; i--) {
+        previousFoodDistance = currentFoodDistance;
+    }
+
+    private void MoveSnake()
+    {
+        if (input != Vector2Int.zero) direction = input;
+
+        for (int i = segments.Count - 1; i > 0; i--)
+        {
             segments[i].position = segments[i - 1].position;
         }
 
-        // Move the snake in the direction it is facing
-        // Round the values to ensure it aligns to the grid
-        int x = Mathf.RoundToInt(transform.position.x) + direction.x;
-        int y = Mathf.RoundToInt(transform.position.y) + direction.y;
-        transform.position = new Vector2(x, y);
+        transform.position = new Vector2(
+            Mathf.RoundToInt(transform.position.x) + direction.x,
+            Mathf.RoundToInt(transform.position.y) + direction.y
+        );
 
-        // Set the next update time based on the speed
-        nextUpdate = Time.time + (1f / (speed * speedMultiplier));
+        CheckCollision();
+    }
+
+    private void CheckCollision()
+    {
+        // Colisión con la comida.
+        if (Mathf.RoundToInt(transform.position.x) == Mathf.RoundToInt(food.position.x) &&
+            Mathf.RoundToInt(transform.position.y) == Mathf.RoundToInt(food.position.y))
+        {
+            AddReward(1.0f); // Recompensa grande por comer la comida.
+            Grow();
+            MoveFood();
+        }
+
+        // Colisión consigo misma.
+        for (int i = 1; i < segments.Count; i++)
+        {
+            if (segments[i].position == transform.position)
+            {
+                AddReward(-1.0f); // Penalización fuerte por morir.
+                EndEpisode();
+            }
+        }
     }
 
     public void Grow()
@@ -82,23 +110,29 @@ public class Snake : MonoBehaviour
     {
         direction = Vector2Int.right;
         transform.position = Vector3.zero;
+        previousFoodDistance = food.position - transform.position;
 
-        // Start at 1 to skip destroying the head
-        for (int i = 1; i < segments.Count; i++) {
-            Destroy(segments[i].gameObject);
+        foreach (Transform segment in segments)
+        {
+            if (segment != transform)
+                Destroy(segment.gameObject);
         }
 
-        // Clear the list but add back this as the head
         segments.Clear();
         segments.Add(transform);
 
-        // -1 since the head is already in the list
-        for (int i = 0; i < initialSize - 1; i++) {
+        for (int i = 0; i < initialSize - 1; i++)
+        {
             Grow();
         }
     }
 
-    public bool Occupies(int x, int y)
+    private void MoveFood()
+    {
+        food.position = new Vector2(Random.Range(-10, 10), Random.Range(-10, 10));
+    }
+
+        public bool Occupies(int x, int y)
     {
         foreach (Transform segment in segments)
         {
@@ -110,38 +144,4 @@ public class Snake : MonoBehaviour
 
         return false;
     }
-
-    private void OnTriggerEnter2D(Collider2D other)
-    {
-        if (other.gameObject.CompareTag("Food"))
-        {
-            Grow();
-        }
-        else if (other.gameObject.CompareTag("Obstacle"))
-        {
-            ResetState();
-        }
-        else if (other.gameObject.CompareTag("Wall"))
-        {
-            if (moveThroughWalls) {
-                Traverse(other.transform);
-            } else {
-                ResetState();
-            }
-        }
-    }
-
-    private void Traverse(Transform wall)
-    {
-        Vector3 position = transform.position;
-
-        if (direction.x != 0f) {
-            position.x = Mathf.RoundToInt(-wall.position.x + direction.x);
-        } else if (direction.y != 0f) {
-            position.y = Mathf.RoundToInt(-wall.position.y + direction.y);
-        }
-
-        transform.position = position;
-    }
-
 }

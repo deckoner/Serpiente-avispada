@@ -4,11 +4,11 @@
 public class Food : MonoBehaviour
 {
     public Collider2D gridArea;
-    private Snake snake;
+    private SnakeAgent snake;
 
     private void Awake()
     {
-        snake = FindObjectOfType<Snake>();
+        snake = FindObjectOfType<SnakeAgent>();
     }
 
     private void Start()
