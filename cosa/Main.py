@@ -6,12 +6,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import os
+import shutil
 import copy
 from tqdm import tqdm
 
-
-# Configurar dispositivo: usar siempre la CPU
-device = torch.device("cpu")
+# Configurar dispositivo: usar la GPU si está disponible, si no usar la CPU
+#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda")
 
 # Variables de configuración
 num_generations = 400  # Número de generaciones (-1 para infinito)
@@ -199,6 +200,7 @@ class SnakeGame:
         pygame.display.flip()
 
 # Modo de entrenamiento
+# Modo de entrenamiento
 def train():
     pygame.init()
     best_agents = []  # Almacena los mejores agentes en general (no solo por generación)
@@ -207,8 +209,8 @@ def train():
     while num_generations == -1 or generation < num_generations:
         # Crear la nueva generación a partir de los mejores agentes
         if best_agents:
-            # Crear 100 agentes hijos a partir de los 30 mejores agentes
-            agents = []
+            # Crear agentes hijos a partir de los mejores agentes
+            current_generation_agents = []
             for _ in range(agents_per_generation):
                 parent = random.choice(best_agents)[0]  # Seleccionar un agente padre
                 child = copy.deepcopy(parent)  # Clonar al agente
@@ -217,29 +219,17 @@ def train():
                     if random.random() < 0.1:  # 10% de probabilidad de mutación
                         noise = torch.normal(0, 0.1, size=param.data.size()).to(device)
                         param.data += noise
-                agents.append(child)
+                current_generation_agents.append(child)
         else:
             # Primera generación: crear agentes desde cero
-            agents = [SnakeAI() for _ in range(agents_per_generation)]
+            current_generation_agents = [SnakeAI() for _ in range(agents_per_generation)]
 
-        # Preparar los juegos para todos los agentes
-        games = [SnakeGame() for _ in range(agents_per_generation)]
-        screens = [pygame.display.set_mode((frame_size_x, frame_size_y)) if show_render else None
-                   for _ in range(agents_per_generation)]
+        # Preparar los juegos para todos los agentes de la generación
         scores = []
-
-        # Barra de progreso para la simulación de los agentes
-        for agent, game, screen in zip(tqdm(agents, desc=f"Generación {generation}", ncols=100), games, screens):
+        for agent in tqdm(current_generation_agents, desc=f"Generación {generation}", ncols=100):
+            game = SnakeGame()
             done = False
             while not done:
-                if show_render and screen:
-                    for event in pygame.event.get():
-                        if event.type == pygame.QUIT:
-                            pygame.quit()
-                            sys.exit()
-
-                    game.render(screen)
-
                 state = game.get_state()
                 action = agent.select_action(state).item()
                 next_state, reward, done = game.step(action)
@@ -248,23 +238,35 @@ def train():
                 agent.optimize_model()
 
                 if show_render:
+                    game.render(None)  # No renderizamos en pantalla, solo ejecutamos la lógica
+
+                if show_render:
                     pygame.time.wait(difficulty)  # Control de velocidad
 
             scores.append(game.score)
 
+        # Guardamos tanto el agente como su puntuación en la lista de la generación actual
+        current_generation_agents_with_scores = list(zip(current_generation_agents, scores))
+
         # Combinar los mejores agentes históricos con los de la generación actual
-        all_agents = best_agents + list(zip(agents, scores))
+        all_agents = best_agents + current_generation_agents_with_scores
+        # Ordenar por puntuación (de mayor a menor) y quedarnos con los mejores
         all_agents = sorted(all_agents, key=lambda x: x[1], reverse=True)[:num_best_agents]
         best_agents = all_agents
 
-        # Obtener el agente con la mejor puntuación
-        best_agent_index = scores.index(max(scores))  # Índice del agente con la mejor puntuación
-        best_score = max(scores)  # Mejor puntuación
+        # Obtener el agente con la mejor puntuación de la lista de mejores agentes
+        best_score = best_agents[0][1]  # Mejor puntuación de la lista ordenada de best_agents
+        best_agent_index = 0  # El primer agente tiene la mejor puntuación después de ordenar
+
+        # Borrar los archivos existentes en la carpeta 'agentes'
+        if os.path.exists('agentes'):
+            shutil.rmtree('agentes')  # Eliminar carpeta 'agentes' y su contenido
+        os.makedirs('agentes', exist_ok=True)
 
         # Guardar los mejores agentes, sobrescribiendo archivos existentes
-        os.makedirs("agentes", exist_ok=True)
         for i, (agent, _) in enumerate(best_agents):
-            save_model(agent.policy_net, f"agentes/best_agent_{i}.pth")
+            # Guardar el modelo con el nombre 'agente_num', donde 'num' es el índice real en best_agents
+            save_model(agent.policy_net, f"agentes/agente_{i}.pth")
 
         # Imprimir detalles de la generación
         print(f"Generación {generation} completada. Mejor puntaje: {best_score} de Agente #{best_agent_index}")
