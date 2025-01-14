@@ -7,9 +7,17 @@ import torch.nn as nn
 import torch.optim as optim
 import os
 import copy
+from tqdm import tqdm
+
 
 # Configurar dispositivo: usar siempre la CPU
 device = torch.device("cpu")
+
+# Variables de configuración
+num_generations = 400  # Número de generaciones (-1 para infinito)
+agents_per_generation = 100  # Número de agentes por generación
+num_best_agents = 50  # Número de agentes que se conservan entre generaciones
+show_render = False  # Mostrar el render durante el entrenamiento
 
 # Definición de la red neuronal para el agente
 class DQN(nn.Module):
@@ -53,8 +61,6 @@ epsilon_start = 1.0
 epsilon_end = 0.01
 epsilon_decay = 500
 memory_capacity = 10000
-generations = 100
-parallel_games = 5
 
 # Configuración del juego
 frame_size_x = 720
@@ -68,7 +74,8 @@ def save_model(model, filename):
     torch.save(model.state_dict(), filename)
 
 def load_model(model, filename):
-    model.load_state_dict(torch.load(filename))
+    # Ahora usamos weights_only=True para evitar posibles riesgos de seguridad
+    model.load_state_dict(torch.load(filename, map_location=device))
 
 # Entrenamiento basado en refuerzo
 class SnakeAI:
@@ -194,21 +201,45 @@ class SnakeGame:
 # Modo de entrenamiento
 def train():
     pygame.init()
-    for generation in range(generations):
-        agents = [SnakeAI() for _ in range(parallel_games)]
-        games = [SnakeGame() for _ in range(parallel_games)]
-        screens = [pygame.display.set_mode((frame_size_x, frame_size_y)) for _ in range(parallel_games)]
+    best_agents = []  # Almacena los mejores agentes en general (no solo por generación)
+
+    generation = 0
+    while num_generations == -1 or generation < num_generations:
+        # Crear la nueva generación a partir de los mejores agentes
+        if best_agents:
+            # Crear 100 agentes hijos a partir de los 30 mejores agentes
+            agents = []
+            for _ in range(agents_per_generation):
+                parent = random.choice(best_agents)[0]  # Seleccionar un agente padre
+                child = copy.deepcopy(parent)  # Clonar al agente
+                # Mutación de los pesos de la red neuronal del agente
+                for param in child.policy_net.parameters():
+                    if random.random() < 0.1:  # 10% de probabilidad de mutación
+                        noise = torch.normal(0, 0.1, size=param.data.size()).to(device)
+                        param.data += noise
+                agents.append(child)
+        else:
+            # Primera generación: crear agentes desde cero
+            agents = [SnakeAI() for _ in range(agents_per_generation)]
+
+        # Preparar los juegos para todos los agentes
+        games = [SnakeGame() for _ in range(agents_per_generation)]
+        screens = [pygame.display.set_mode((frame_size_x, frame_size_y)) if show_render else None
+                   for _ in range(agents_per_generation)]
         scores = []
 
-        for agent, game, screen in zip(agents, games, screens):
+        # Barra de progreso para la simulación de los agentes
+        for agent, game, screen in zip(tqdm(agents, desc=f"Generación {generation}", ncols=100), games, screens):
             done = False
             while not done:
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
-                        pygame.quit()
-                        sys.exit()
+                if show_render and screen:
+                    for event in pygame.event.get():
+                        if event.type == pygame.QUIT:
+                            pygame.quit()
+                            sys.exit()
 
-                game.render(screen)
+                    game.render(screen)
+
                 state = game.get_state()
                 action = agent.select_action(state).item()
                 next_state, reward, done = game.step(action)
@@ -216,23 +247,29 @@ def train():
                                    torch.tensor([reward], device=device), next_state, done))
                 agent.optimize_model()
 
-                pygame.time.wait(difficulty)  # Control de velocidad
+                if show_render:
+                    pygame.time.wait(difficulty)  # Control de velocidad
 
             scores.append(game.score)
 
-        # Identificar las dos mejores redes neuronales
-        best_indices = np.argsort(scores)[-2:]  # Índices de los dos mejores
-        print(f"Generation {generation}, Top Scores: {scores[best_indices[0]]}, {scores[best_indices[1]]}")
+        # Combinar los mejores agentes históricos con los de la generación actual
+        all_agents = best_agents + list(zip(agents, scores))
+        all_agents = sorted(all_agents, key=lambda x: x[1], reverse=True)[:num_best_agents]
+        best_agents = all_agents
 
-        # Guardar los modelos de las dos mejores redes
-        for i, idx in enumerate(best_indices):
-            save_model(agents[idx].policy_net, f"best_agent_gen{generation}_{i}.pth")
+        # Obtener el agente con la mejor puntuación
+        best_agent_index = scores.index(max(scores))  # Índice del agente con la mejor puntuación
+        best_score = max(scores)  # Mejor puntuación
 
-        # Crear nuevos agentes basados en los mejores
-        new_agents = [copy.deepcopy(agents[i]) for i in best_indices]
-        for i in range(parallel_games):
-            if i not in best_indices:
-                agents[i] = copy.deepcopy(new_agents[random.randint(0, 1)])
+        # Guardar los mejores agentes, sobrescribiendo archivos existentes
+        os.makedirs("agentes", exist_ok=True)
+        for i, (agent, _) in enumerate(best_agents):
+            save_model(agent.policy_net, f"agentes/best_agent_{i}.pth")
+
+        # Imprimir detalles de la generación
+        print(f"Generación {generation} completada. Mejor puntaje: {best_score} de Agente #{best_agent_index}")
+
+        generation += 1
 
     pygame.quit()
 
@@ -264,4 +301,3 @@ elif mode == "play":
     play(model_name)
 else:
     print("Modo no válido")
-
